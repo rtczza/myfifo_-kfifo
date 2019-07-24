@@ -18,7 +18,7 @@ bool readDone_flag; //读文件完成标准
 void *P_read()
 {
 	FILE *fp;
-	char *pname = "./27M.mp4";
+	char *pname = "./16M.mp4";
 	fp = fopen(pname, "r");
 	if(NULL == fp)
 		perror("fopen error: ");
