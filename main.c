@@ -1,92 +1,133 @@
-#include "myloopbuf.h"
+#include "kfifo.h"
 #include <pthread.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <stdbool.h>
 
-#define LEN_LOOP 1024
+static pthread_t ReadId; //读线程ID
 
+static pthread_t WriteId; //写线程ID
 
-struct my_fifo *fifo;
-char buffer[LEN_LOOP];
+struct kfifo event_fifo; //实例化
 
-pthread_t add_id;
+bool readDone_flag; //读文件完成标准
 
-pthread_t sub_id;
-
-pthread_t judge_id;
-
-
-void *Add()
+//读线程:打开“27M.mp4”文件,
+void *P_read()
 {
-	unsigned char add_buf[128]={0};
-	memset(add_buf, 'a', sizeof(add_buf));
-	
+	FILE *fp;
+	char *pname = "./27M.mp4";
+	fp = fopen(pname, "r");
+	if(NULL == fp)
+		perror("fopen error: ");
+	else
+		printf ("fopen %s success ! \n", pname);
+
+	char buf[1024] = {0};
+	int n;
+	int total_len=0;
+	readDone_flag = 0;
+
 	while(1)
-	{
-		myfifo_in(fifo, add_buf, sizeof(add_buf));
-		
-		sleep(2);
-	}
+		{
+			if(feof(fp))
+				break ;
+			n = fread(buf, 1, sizeof(buf), fp);
 
-}
+			n = kfifo_in(&event_fifo, buf, n);
+			if(n>0)
+				printf("P_read : len :%d_[%d]--- %dM \n",n,  total_len, total_len/(1024*1024));
 
-void *Sub()
-{
-	unsigned char sub_buf[256]={0};
-	int i;
-	while(1)
-	{
-		myfifo_out(fifo, sub_buf, 64);
-		
-		sleep(1);
-		for(i=0; i<64; i++)
-			printf("%c ", sub_buf[i]);
-		printf("\n");
-	}
-}
+			total_len = total_len + n;
 
+			sleep(0);
+		}
 
-void *Judge()
-{
-	int ret;
-	while(1)
-	{
-		ret = myfifo_is_full(fifo);
-		if(1 == ret)
-			printf("****************** [Full] ********** \n");
-		
-		ret = myfifo_is_empty(fifo);
-		if(1 == ret)
-			printf("****************** [Empty] ********** \n");
-		
-		ret = myfifo_len(fifo);
-		printf("---------------- used :%d \n", ret);
-		
-		sleep(1);
-	}
+	fclose(fp);
+	sleep(1);
+	readDone_flag = 1;
 }
 
 
+void *P_write()
+{
+	FILE *fp;
+	char *pname = "test.mp4";
+	fp = fopen(pname, "a+");
+	if(NULL == fp)
+		perror("fopen error: ");
+	else
+		printf ("fopen %s success ! \n", pname);
+
+	char buf[2048] = {0};
+	int n;
+	int total_len=0;
+
+	while(1)
+		{
+			int len = kfifo_len(&event_fifo);
+
+			if(len > 0)
+				/* printf("P_write :--------------------------------------------------- len :%d_[%d] \n",len,  total_len); */
+
+			n = (len<2048 ? len:2048);
+			n = kfifo_out(&event_fifo, buf, n);
+
+			fwrite(buf, 1, n, fp);
+
+			if((0 == len) && (readDone_flag))
+				{
+					fclose(fp);
+					pthread_exit(NULL);
+				}
+			total_len = total_len + n;
+		}
+}
 
 
+//主函数主要是:给fifo申请内存空间, 创建读写线程,等待读写线程结束。其实5行代码就可以搞定。
 int main()
 {
-	fifo = malloc(sizeof(struct my_fifo));
-	
-	myfifo_alloc(fifo, (unsigned int)LEN_LOOP, sizeof(char));
+	int ret;
 
-	/* myfifo_init(fifo, buffer, sizeof(buffer), sizeof(char)); */
-	
-	pthread_create(&judge_id, NULL, Judge, NULL);
+	/* Create the FIFO */
+	ret = kfifo_alloc(&event_fifo, 1024*1024*4); //4M
+	if (ret)
+		printf("Out of memory allocating event FIFO buffer\n");
 
-	sleep(2);
-	
-	pthread_create(&add_id, NULL, Add, NULL);
-	
-	pthread_create(&sub_id, NULL, Sub, NULL);
-		
-	while(1){sleep(1);}
 
+	ret = pthread_create(&ReadId, NULL, P_read, NULL); //创建读线程
+	if (ret)
+		perror("pthread_create ReadId error :\n");
+	else
+		printf ("pthread_create ReadId success ! \n");
+
+	ret =  pthread_create(&WriteId, NULL, P_write, NULL);//创建写线程
+	if (ret)
+		perror("pthread_create WriteId error :\n");
+	else
+		printf ("pthread_create WriteId success ! \n");
+
+
+	ret = pthread_join(ReadId, NULL); //等待读线程结束
+	if(0 != ret)
+		perror("pthread_join ReadId error");
+	else
+		printf("ReadId pthread_join successed! \n");
+
+	ret = pthread_join(WriteId, NULL); //等待写线程结束
+	if(0 != ret)
+		perror("pthread_join WriteId error");
+	else
+		printf("WriteId pthread_join successed! \n");
+
+
+	kfifo_free(&event_fifo); //释放fifo
 	return 0;
 }
+
 
 
 
